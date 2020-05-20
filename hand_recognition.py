@@ -526,11 +526,12 @@ def get_horizontal_line_intersection(first_point, second_point, line):
 
 
 def get_fingers_status(fingers, thumb_index, first_finger_point, second_finger_point):
-    fifth_length = (second_finger_point[0] - first_finger_point[0]) // 5
-    if thumb_index is not None:
+    fifth_length = int((second_finger_point[0] - first_finger_point[0]) / 5 * 0.7)
+    '''if thumb_index is not None:
         quarter_length = ((second_finger_point[0] - first_finger_point[0]) - fifth_length) // 4
     else:
-        quarter_length = (second_finger_point[0] - first_finger_point[0]) // 4
+        quarter_length = (second_finger_point[0] - first_finger_point[0]) // 4'''
+    quarter_length = (second_finger_point[0] - first_finger_point[0]) // 4
     fingers_status = [False, False, False, False, False]
     fingers_status[0] = thumb_index is not None
     finger_lines = get_fingers_lines(fingers, thumb_index, first_finger_point, second_finger_point)
@@ -539,6 +540,7 @@ def get_fingers_status(fingers, thumb_index, first_finger_point, second_finger_p
             length = int(bottom_center[0]) - first_finger_point[0] - fifth_length
         else:
             length = int(bottom_center[0]) - first_finger_point[0]
+        length = int(bottom_center[0]) - first_finger_point[0] - fifth_length
         finger_index = length // quarter_length
         finger_index = finger_index if finger_index >= 0 else 0
         if finger_index + 1 < 5:
@@ -685,7 +687,7 @@ def get_hand_attributes_with_visualisations(segmented_hand):
         box = cv.boxPoints(rect)
         box = sorted(box, key=lambda t: t[1])
         box = [np.array(point, dtype=np.int32) for point in box]
-        stop = box[2][1]
+        stop = int(box[2][1] * 0.9)
     first_finger_point, second_finger_point = get_finger_line(segmented_hand_no_arm, stop)
     finger_lines = get_fingers_lines(fingers, thumb_index, first_finger_point, second_finger_point)
     fingers_status = get_fingers_status(fingers, thumb_index, first_finger_point, second_finger_point)
@@ -783,7 +785,7 @@ def get_hand_attributes(segmented_hand):
         box = cv.boxPoints(rect)
         box = sorted(box, key=lambda t: t[1])
         box = [np.array(point, dtype=np.int32) for point in box]
-        stop = box[2][1]
+        stop = int(box[2][1])
     first_finger_point, second_finger_point = get_finger_line(segmented_hand_no_arm, stop)
     fingers_status = get_fingers_status(fingers, thumb_index, first_finger_point, second_finger_point)
     return fingers_status
@@ -1868,8 +1870,9 @@ def get_accuracy():
 
 
 if __name__ == '__main__':
-    main_gray()
-    #third_main()
+    #main()
+    #main_gray()
+    third_main()
     #test_hand_detection()
     #test_rgb_to_ycb()
     #test_web_camera_thread()
