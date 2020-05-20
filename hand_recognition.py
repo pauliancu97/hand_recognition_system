@@ -12,6 +12,9 @@ from time import sleep
 from numba import jit
 from json import load
 import random
+import os
+import re
+import shutil
 
 
 ORIGINAL_IMAGE_WINDOW = 'Original Image'
@@ -489,22 +492,11 @@ def get_palm_line(segmented_hand, fingers, thumb_index):
             return palm_line - 1
 
 
-def get_finger_line(segmented_hand, fingers, thumb_index):
-    for contour, _ in fingers:
-        cv.drawContours(segmented_hand, [contour], -1, 0, -1)
-    kernel = np.ones((5, 5), dtype=np.uint8)
-    segmented_hand = cv.morphologyEx(segmented_hand, cv.MORPH_OPEN, kernel)
+@jit(nopython=True)
+def get_finger_line(segmented_hand, stop):
     global_x_min = None
     global_x_max = None
     palm_line = None
-    stop = segmented_hand.shape[0]
-    if thumb_index is not None:
-        thumb_contour, center = fingers[thumb_index]
-        rect = cv.minAreaRect(thumb_contour)
-        box = cv.boxPoints(rect)
-        box = sorted(box, key=lambda t: t[1])
-        box = [np.array(point, dtype=np.int32) for point in box]
-        stop = box[2][1]
     for row in range(0, stop):
         local_x_min = None
         local_x_max = None
@@ -679,7 +671,22 @@ def get_hand_attributes_with_visualisations(segmented_hand):
     segmented_hand = cv.morphologyEx(segmented_hand, cv.MORPH_OPEN, kernel)
     fingers = get_fingers(segmented_hand)
     thumb_index = get_thumb_index(fingers, palm_point, first_wrist_point, second_wrist_point)
-    first_finger_point, second_finger_point = get_finger_line(segmented_hand_no_arm, fingers, thumb_index)
+    '''first_finger_point, second_finger_point = get_finger_line(segmented_hand_no_arm, fingers, thumb_index)
+    finger_lines = get_fingers_lines(fingers, thumb_index, first_finger_point, second_finger_point)
+    fingers_status = get_fingers_status(fingers, thumb_index, first_finger_point, second_finger_point)'''
+    for contour, _ in fingers:
+        cv.drawContours(segmented_hand_no_arm, [contour], -1, 0, -1)
+    kernel = np.ones((5, 5), dtype=np.uint8)
+    segmented_hand_no_arm = cv.morphologyEx(segmented_hand_no_arm, cv.MORPH_OPEN, kernel)
+    stop = segmented_hand_no_arm.shape[0]
+    if thumb_index is not None:
+        thumb_contour, center = fingers[thumb_index]
+        rect = cv.minAreaRect(thumb_contour)
+        box = cv.boxPoints(rect)
+        box = sorted(box, key=lambda t: t[1])
+        box = [np.array(point, dtype=np.int32) for point in box]
+        stop = box[2][1]
+    first_finger_point, second_finger_point = get_finger_line(segmented_hand_no_arm, stop)
     finger_lines = get_fingers_lines(fingers, thumb_index, first_finger_point, second_finger_point)
     fingers_status = get_fingers_status(fingers, thumb_index, first_finger_point, second_finger_point)
     visualization = FinalVisualization(palm_point, (first_finger_point, second_finger_point),
@@ -765,7 +772,19 @@ def get_hand_attributes(segmented_hand):
     segmented_hand = cv.morphologyEx(segmented_hand, cv.MORPH_OPEN, kernel)
     fingers = get_fingers(segmented_hand)
     thumb_index = get_thumb_index(fingers, palm_point, first_wrist_point, second_wrist_point)
-    first_finger_point, second_finger_point = get_finger_line(segmented_hand_no_arm, fingers, thumb_index)
+    for contour, _ in fingers:
+        cv.drawContours(segmented_hand_no_arm, [contour], -1, 0, -1)
+    kernel = np.ones((5, 5), dtype=np.uint8)
+    segmented_hand_no_arm = cv.morphologyEx(segmented_hand_no_arm, cv.MORPH_OPEN, kernel)
+    stop = segmented_hand_no_arm.shape[0]
+    if thumb_index is not None:
+        thumb_contour, center = fingers[thumb_index]
+        rect = cv.minAreaRect(thumb_contour)
+        box = cv.boxPoints(rect)
+        box = sorted(box, key=lambda t: t[1])
+        box = [np.array(point, dtype=np.int32) for point in box]
+        stop = box[2][1]
+    first_finger_point, second_finger_point = get_finger_line(segmented_hand_no_arm, stop)
     fingers_status = get_fingers_status(fingers, thumb_index, first_finger_point, second_finger_point)
     return fingers_status
 
@@ -968,8 +987,6 @@ def third_main():
                         difference = cv.absdiff(roi, background_roi)
                         _, foreground = cv.threshold(difference, 20, 255, cv.THRESH_BINARY)
                         foreground = cv.dilate(foreground, kernel)'''
-                        roi = equalize_histogram(roi)
-                        roi = cv.GaussianBlur(roi, (7, 7), 0)
                         roi = np.flip(roi, axis=1)
                         segmented_hand = segment_hand(roi, hsv_values)
                         cv.imshow('Foreground', segmented_hand)
@@ -979,8 +996,6 @@ def third_main():
                         if key_code == ord('S') or key_code == ord('s'):
                             hand_clear = True
                     else:
-                        roi = equalize_histogram(roi)
-                        roi = cv.GaussianBlur(roi, (9, 9), 0)
                         roi = np.flip(roi, axis=1)
                         #roi = cv.resize(roi, (200, 200), interpolation=cv.INTER_AREA)
                         segmented_hand = segment_hand(roi, hsv_values)
@@ -1010,7 +1025,7 @@ def get_masked_image(img, mask):
     return result
 
 
-def main():
+def main(is_gray=False):
     image_name = easygui.fileopenbox()
     img = cv.imread(image_name)
     hsv_values = HSVValues()
@@ -1036,8 +1051,25 @@ def main():
     equalized_histogram = equalize_histogram(img)
     cv.imwrite('Original.jpg', img)
     cv.imwrite('Equalized histogram.jpg', equalized_histogram)
-    segmented_hand = segment_hand(equalized_histogram, hsv_values)
+    if is_gray:
+        segmented_hand = get_largest_connected_component(cv.cvtColor(img, cv.COLOR_BGR2GRAY))
+    else:
+        segmented_hand = segment_hand(equalized_histogram, hsv_values)
     cv.imwrite('Mask.jpg', segmented_hand)
+    finger_status = get_hand_attributes_with_visualisations(segmented_hand)
+    print(finger_status)
+    while True:
+        if cv.waitKey(1) & 0xFF == ord('q'):
+            break
+
+
+def main_gray():
+    image_name = easygui.fileopenbox()
+    img = cv.imread(image_name, cv.IMREAD_GRAYSCALE)
+    _, img = cv.threshold(img, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU)
+    cv.namedWindow(ORIGINAL_IMAGE_WINDOW)
+    cv.imshow(ORIGINAL_IMAGE_WINDOW, img)
+    segmented_hand = get_largest_connected_component(img)
     finger_status = get_hand_attributes_with_visualisations(segmented_hand)
     print(finger_status)
     while True:
@@ -1144,7 +1176,8 @@ def second_main():
 
 class Yolo:
 
-    def __init__(self, config_path, weights_path, confidence, threshold):
+    def __init__(self, config_path='cross-hands-tiny-prn.cfg', weights_path='cross-hands-tiny-prn.weights',
+                 confidence=0.5, threshold=0.3):
         self.config_path = config_path
         self.weights_path = weights_path
         self.net = cv.dnn.readNetFromDarknet(self.config_path, self.weights_path)
@@ -1266,6 +1299,12 @@ def get_largest_connected_component(img):
     result = np.where(labels == largest_label, 255, 0)
     result = np.array(result, dtype=np.uint8)
     return result
+
+
+def fill_holes(img):
+    contours, _ = cv.findContours(img, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_NONE)
+    cv.drawContours(img, contours, -1, 255, -1)
+    return img
 
 
 def test_camera_subtraction():
@@ -1472,6 +1511,85 @@ class VisualisationThread(Thread):
         return first_slice, second_slice
 
 
+class DisplayThread(Thread):
+
+    def __init__(self, queue):
+        super().__init__()
+        self.daemon = True
+        self.queue = queue
+        self.key = None
+
+    def get_key(self):
+        return self.key
+
+    def run(self):
+        while True:
+            self.key = cv.waitKey(1) & 0xFF
+            data = self.queue.get()
+            current_state = data['current_state']
+            frame = data['frame']
+            camera_img = np.copy(frame)
+            hand_mask = None if 'hand_mask' not in data else data['hand_mask']
+            hand_box = None if 'hand_box' not in data else data['hand_box']
+            chosen_fingers_states = None if 'chosen_fingers_states' not in data else data['chosen_fingers_states']
+            fingers_states = None if 'fingers_states' not in data else data['fingers_states']
+            hand_image = None
+            instructions_img = np.zeros((300, 800, 3), dtype=np.uint8)
+            if current_state == BACKGROUND_INIT_STATE:
+                message = 'Initializing background, please wait'
+                (width, height), baseline = cv.getTextSize(message, cv.FONT_HERSHEY_SIMPLEX, 0.7, 1)
+                height += baseline
+                cv.putText(instructions_img, message, (0, height), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0))
+            elif current_state == HAND_DETECTION_AND_SEGMENTATION_STATE:
+                message = 'Raise your right hand, press \'S\' when your hand is visible'
+                (width, height), baseline = cv.getTextSize(message, cv.FONT_HERSHEY_SIMPLEX, 0.7, 1)
+                height += baseline
+                cv.putText(instructions_img, message, (0, height), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0))
+                if (hand_mask is not None) and (hand_box is not None):
+                    hand_mask_bgr = cv.merge((hand_mask, hand_mask, hand_mask))
+                    hand_roi = get_box_roi(frame, hand_box)
+                    hand_image = cv.bitwise_and(hand_roi, hand_mask_bgr)
+                    x, y, w, h = hand_box
+                    cv.rectangle(camera_img, (x, y), (x + w, y + h), (0, 0, 255))
+            elif current_state == SHOW_GESTURE_STATE:
+                instruction = 'Replicate gesture'
+                chosen_fingers_states_text = 'Desired - Thumb: {}; Index: {}; Middle: {}; Ring: {}; Little: {}'.format(
+                    *['Up' if finger_state else 'Down' for finger_state in chosen_fingers_states])
+                fingers_states_text = 'Current - Thumb: {}; Index: {}; Middle: {}; Ring: {}; Little: {}'.format(
+                    *['Up' if finger_state else 'Down' for finger_state in fingers_states])
+                (width_instruction, height_instruction), baseline = cv.getTextSize(instruction, cv.FONT_HERSHEY_SIMPLEX,
+                                                                                   0.7, 1)
+                height_instruction += baseline
+                (width_chosen, height_chosen), baseline = cv.getTextSize(chosen_fingers_states_text,
+                                                                         cv.FONT_HERSHEY_SIMPLEX, 0.7, 1)
+                height_chosen += baseline
+                (width_current, height_current), baseline = cv.getTextSize(fingers_states_text, cv.FONT_HERSHEY_SIMPLEX,
+                                                                           0.7, 1)
+                height_current += baseline
+                cv.putText(instructions_img, instruction, (0, height_instruction), cv.FONT_HERSHEY_SIMPLEX, 0.7,
+                           (255, 0, 0))
+                cv.putText(instructions_img, fingers_states_text, (0, height_instruction + height_current),
+                           cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 1)
+                cv.putText(instructions_img, chosen_fingers_states_text,
+                           (0, height_instruction + height_current + height_chosen), cv.FONT_HERSHEY_SIMPLEX, 0.7,
+                           (255, 0, 0), 1)
+                if (hand_mask is not None) and (hand_box is not None):
+                    hand_mask_bgr = cv.merge((hand_mask, hand_mask, hand_mask))
+                    hand_roi = np.flip(get_box_roi(frame, hand_box), axis=1)
+                    hand_image = cv.bitwise_and(hand_roi, hand_mask_bgr)
+                    x, y, w, h = hand_box
+                    cv.rectangle(camera_img, (x, y), (x + w, y + h), (255, 0, 0))
+            elif current_state == SUCCESS_STATE:
+                message = 'Success'
+                (width, height), baseline = cv.getTextSize(message, cv.FONT_HERSHEY_SIMPLEX, 0.7, 1)
+                height += baseline
+                cv.putText(instructions_img, message, (0, height), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0))
+            cv.imshow('Camera', camera_img)
+            cv.imshow('Instructions', instructions_img)
+            if hand_image is not None:
+                cv.imshow('Hand', hand_image)
+
+
 def test_background_subtractor():
     camera = cv.VideoCapture(0)
     if not camera.isOpened():
@@ -1539,11 +1657,15 @@ def test():
     hand_mask = None
     num_success_frames = 0
     chosen_fingers_states = tuple([False] * 5)
-    fingers_states = [False] * 5
+    fingers_states = tuple([False] * 5)
+    data = dict()
+    queue = Queue()
+    display_thread = DisplayThread(queue)
+    display_thread.start()
     while True:
-        key = cv.waitKey(1) & 0xFF
+        cv.waitKey(1)
+        key = display_thread.get_key()
         frame = web_camera_thread.frame()
-        #Logic
         if key == ord('q') or key == ord('Q'):
             break
         if current_state == BACKGROUND_INIT_STATE:
@@ -1586,71 +1708,173 @@ def test():
             if num_success_frames == NUM_SUCCESS_FRAMES:
                 num_success_frames = 0
                 current_state = CHOOSE_RANDOM_FINGERS_STATE
-        #Visual
-        camera_img = np.copy(frame)
-        hand_image = None
-        instructions_img = np.zeros((300, 800, 3), dtype=np.uint8)
-        if current_state == BACKGROUND_INIT_STATE:
-            message = 'Initializing background,\nplease wait'
-            (width, height), baseline = cv.getTextSize(message, cv.FONT_HERSHEY_SIMPLEX, 0.7, 1)
-            height += baseline
-            cv.putText(instructions_img, message, (0, height), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0))
-        elif current_state == HAND_DETECTION_AND_SEGMENTATION_STATE:
-            message = 'Raise your right hand,\n press \'S\' when your hand is visible'
-            (width, height), baseline = cv.getTextSize(message, cv.FONT_HERSHEY_SIMPLEX, 0.7, 1)
-            height += baseline
-            cv.putText(instructions_img, message, (0, height), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0))
-            if (hand_mask is not None) and (hand_box is not None):
-                hand_mask_bgr = cv.merge((hand_mask, hand_mask, hand_mask))
-                hand_roi = get_box_roi(frame, hand_box)
-                hand_image = cv.bitwise_and(hand_roi, hand_mask_bgr)
+        data['current_state'] = current_state
+        data['frame'] = frame
+        data['hand_mask'] = hand_mask
+        data['hand_box'] = hand_box
+        data['chosen_fingers_states'] = chosen_fingers_states
+        data['fingers_states'] = fingers_states
+        queue.put(data)
+
+
+BACKGROUND_INIT_COLLECT_STATE = 0
+DETECT_SEGMENT_COLLECT_STATE = 1
+TRACK_IDLE_COLLECT_STATE = 2
+TRACK_RECORD_INIT_COLLECT_STATE = 3
+TRACK_RECORD_COLLECT_STATE = 4
+
+
+CONTROLS_WIN_NAME = 'Controls'
+RECORD = 'Record'
+THUMB = 'Thumb'
+INDEX = 'Index'
+MIDDLE = 'Middle'
+RING = 'Ring'
+LITTLE = 'Little'
+
+
+def nothing(x):
+    pass
+
+
+def collect_test_images():
+    camera = cv.VideoCapture(0)
+    if not camera.isOpened():
+        return
+    ret, frame = camera.read()
+    if not ret:
+        return
+    height, width = frame.shape[:2]
+    background_subtractor = BackgroundSubtractor(width, height, 180)
+    hand_detector = HandDetector()
+    hand_box = None
+    hand_mask = None
+    hand_state = tuple([False] * 5)
+    frames_per_state = dict()
+    current_state = BACKGROUND_INIT_COLLECT_STATE
+    while camera.isOpened():
+        key = cv.waitKey(1) & 0xFF
+        ret, frame = camera.read()
+        if ret:
+            if current_state == BACKGROUND_INIT_COLLECT_STATE:
+                background_subtractor.update(frame)
+                if background_subtractor.is_initialized():
+                    current_state = DETECT_SEGMENT_COLLECT_STATE
+                    print('Initialized background')
+            elif current_state == DETECT_SEGMENT_COLLECT_STATE:
+                foreground = background_subtractor.foreground_mask(frame)
+                detection = hand_detector.detect(frame, foreground)
+                if detection is None:
+                    hand_box = None
+                    hand_mask = None
+                else:
+                    hand_box, hand_mask = detection
+                if key == ord('s') or key == ord('S'):
+                    current_state = TRACK_IDLE_COLLECT_STATE
+                    hand_detector.capture()
+                    cv.namedWindow(CONTROLS_WIN_NAME)
+                    cv.createTrackbar(RECORD, CONTROLS_WIN_NAME, 0, 1, nothing)
+                    cv.createTrackbar(THUMB, CONTROLS_WIN_NAME, 0, 1, nothing)
+                    cv.createTrackbar(INDEX, CONTROLS_WIN_NAME, 0, 1, nothing)
+                    cv.createTrackbar(MIDDLE, CONTROLS_WIN_NAME, 0, 1, nothing)
+                    cv.createTrackbar(RING, CONTROLS_WIN_NAME, 0, 1, nothing)
+                    cv.createTrackbar(LITTLE, CONTROLS_WIN_NAME, 0, 1, nothing)
+                    print('Captured hand')
+            elif current_state == TRACK_IDLE_COLLECT_STATE:
+                detection = hand_detector.track(frame)
+                if detection is None:
+                    hand_box = None
+                    hand_mask = None
+                else:
+                    hand_box, hand_mask = detection
+                is_record_on = cv.getTrackbarPos(RECORD, CONTROLS_WIN_NAME) == 1
+                if is_record_on:
+                    current_state = TRACK_RECORD_COLLECT_STATE
+                    thumb_state = cv.getTrackbarPos(THUMB, CONTROLS_WIN_NAME) == 1
+                    index_state = cv.getTrackbarPos(INDEX, CONTROLS_WIN_NAME) == 1
+                    middle_state = cv.getTrackbarPos(MIDDLE, CONTROLS_WIN_NAME) == 1
+                    ring_state = cv.getTrackbarPos(RING, CONTROLS_WIN_NAME) == 1
+                    little_state = cv.getTrackbarPos(LITTLE, CONTROLS_WIN_NAME) == 1
+                    hand_state = (thumb_state, index_state, middle_state, ring_state, little_state)
+                    if hand_state not in frames_per_state:
+                        frames_per_state[hand_state] = []
+                    print('Recording frames...')
+            elif current_state == TRACK_RECORD_COLLECT_STATE:
+                detection = hand_detector.track(frame)
+                if detection is None:
+                    hand_box = None
+                    hand_mask = None
+                else:
+                    hand_box, hand_mask = detection
+                if hand_mask is not None:
+                    frames_per_state[hand_state].append(hand_mask)
+                is_record_on = cv.getTrackbarPos(RECORD, CONTROLS_WIN_NAME) == 1
+                if not is_record_on:
+                    current_state = TRACK_IDLE_COLLECT_STATE
+                    print('Finished recording frames')
+            #Visual
+            if hand_box is not None:
                 x, y, w, h = hand_box
-                cv.rectangle(camera_img, (x, y), (x + w, y + h), (0, 0, 255))
-        elif current_state == SHOW_GESTURE_STATE:
-            instruction = 'Replicate gesture'
-            chosen_fingers_states_text = 'Desired - Thumb: {} Index: {} Middle: {} Ring: {} Little: {}'.format(
-                *['Up' if finger_state else 'Down' for finger_state in chosen_fingers_states])
-            fingers_states_text = 'Current - Thumb: {} Index: {} Middle: {} Ring: {} Little: {}'.format(
-                *['Up' if finger_state else 'Down' for finger_state in fingers_states])
-            (width_instruction, height_instruction), baseline = cv.getTextSize(instruction, cv.FONT_HERSHEY_SIMPLEX,
-                                                                               0.7, 1)
-            height_instruction += baseline
-            (width_chosen, height_chosen), baseline = cv.getTextSize(chosen_fingers_states_text,
-                                                                     cv.FONT_HERSHEY_SIMPLEX, 0.7, 1)
-            height_chosen += baseline
-            (width_current, height_current), baseline = cv.getTextSize(fingers_states_text, cv.FONT_HERSHEY_SIMPLEX,
-                                                                       0.7, 1)
-            height_current += baseline
-            cv.putText(instructions_img, instruction, (0, height_instruction), cv.FONT_HERSHEY_SIMPLEX, 0.7,
-                       (255, 0, 0))
-            cv.putText(instructions_img, fingers_states_text, (0, height_instruction + height_current),
-                       cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 1)
-            cv.putText(instructions_img, chosen_fingers_states_text,
-                       (0, height_instruction + height_current + height_chosen), cv.FONT_HERSHEY_SIMPLEX, 0.7,
-                       (255, 0, 0), 1)
-            if (hand_mask is not None) and (hand_box is not None):
-                hand_mask_bgr = cv.merge((hand_mask, hand_mask, hand_mask))
-                hand_roi = get_box_roi(frame, hand_box)
-                hand_image = cv.bitwise_and(hand_roi, hand_mask_bgr)
-                x, y, w, h = hand_box
-                cv.rectangle(camera_img, (x, y), (x + w, y + h), (255, 0, 0))
-        elif current_state == SUCCESS_STATE:
-            message = 'Success'
-            (width, height), baseline = cv.getTextSize(message, cv.FONT_HERSHEY_SIMPLEX, 0.7, 1)
-            height += baseline
-            cv.putText(instructions_img, message, (0, height), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0))
-        cv.imshow('Camera', camera_img)
-        cv.imshow('Instructions', instructions_img)
-        if hand_image is not None:
-            cv.imshow('Hand', hand_image)
+                cv.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
+            if hand_mask is not None:
+                cv.imshow('Hand', hand_mask)
+            cv.imshow('Camera', frame)
+        if key == ord('q') or key == ord('Q'):
+            break
+    if frames_per_state:
+        for hand_state, frames in frames_per_state.items():
+            repr_state = '_'.join(['up' if it else 'down' for it in hand_state])
+            if not os.path.exists(repr_state):
+                os.mkdir(repr_state)
+            for index, frame in enumerate(frames):
+                path = '{}/{}.jpg'.format(repr_state, index)
+                cv.imwrite(path, frame)
+
+
+def get_accuracy():
+    if os.path.exists('defects'):
+        shutil.rmtree('defects')
+    os.mkdir('defects')
+    regular_expression = re.compile('(?:up|down)_(?:up|down)_(?:up|down)_(?:up|down)_(?:up|down)')
+    test_images_dirs = []
+    for path in os.listdir(os.getcwd()):
+        if os.path.isdir(path) and regular_expression.match(path):
+            test_images_dirs.append(path)
+    total_tests = 0
+    correct_tests = 0
+    for test_images_dir in test_images_dirs:
+        test_path = os.path.join(os.getcwd(), test_images_dir)
+        for file_name in os.listdir(test_path):
+            total_tests += 1
+            file_path = os.path.join(test_path, file_name)
+            image = cv.imread(file_path, cv.IMREAD_GRAYSCALE)
+            image = np.flip(image, axis=1)
+            _, image = cv.threshold(image, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU)
+            image = fill_holes(image)
+            hand_state = [False] * 5
+            try:
+                hand_state = get_hand_attributes(image)
+            except Exception:
+                pass
+            repr_hand_state = '_'.join(['up' if it else 'down' for it in hand_state])
+            if repr_hand_state == test_images_dir:
+                correct_tests += 1
+            else:
+                new_file_name = '{}_{}'.format(test_images_dir, file_name)
+                new_file_path = os.path.join('defects', new_file_name)
+                cv.imwrite(new_file_path, image)
+    accuracy = correct_tests / total_tests
+    print('Accuracy: {}'.format(accuracy))
 
 
 if __name__ == '__main__':
-    #main()
+    main_gray()
     #third_main()
     #test_hand_detection()
     #test_rgb_to_ycb()
     #test_web_camera_thread()
     #test_camera_subtraction()
     #test_background_subtractor()
-    test()
+    #test()
+    #collect_test_images()
+    #get_accuracy()
