@@ -1,0 +1,36 @@
+{
+  "fingers_states": [
+    {
+      "state": [true, false, false, false, false],
+      "path": "thumb.jpg"
+    },
+    {
+      "state": [true, true, false, false, false],
+      "path": "thumb_index.jpg"
+    },
+    {
+      "state": [true, true, true, false, false],
+      "path": "thumb_index_middle.jpg"
+    },
+    {
+      "state": [true, false, false, false, true],
+      "path": "thumb_little.jpg"
+    },
+    {
+      "state": [true, true, false, false, true],
+      "path": "thumb_index_little.jpg"
+    },
+    {
+      "state": [false, true, false, false, true],
+      "path": "index_little.jpg"
+    },
+    {
+      "state": [false, true, true, true, true],
+      "path": "four.jpg"
+    },
+    {
+      "state": [true, true, true, true, true],
+      "path": "five.jpg"
+    }
+  ]
+}

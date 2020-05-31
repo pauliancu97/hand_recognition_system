@@ -15,6 +15,17 @@ import random
 import os
 import re
 import shutil
+from kivy.app import App
+from kivy.uix.image import Image
+from kivy.clock import Clock
+from kivy.graphics.texture import Texture
+from kivy.graphics import Color, Rectangle
+from kivy.uix.gridlayout import GridLayout
+from kivy.uix.screenmanager import Screen, ScreenManager
+from kivy.uix.label import Label
+from kivy.core.window import Window
+from kivy.uix.button import Button
+import gc
 
 
 ORIGINAL_IMAGE_WINDOW = 'Original Image'
@@ -1869,15 +1880,333 @@ def get_accuracy():
     print('Accuracy: {}'.format(accuracy))
 
 
+class NumPyColorImage(Image):
+
+    def __init__(self, image, size=None, **kwargs):
+        super(NumPyColorImage, self).__init__(**kwargs)
+        self.image = image
+        self.size_image = size
+        self.texture = self.get_texture()
+
+    def get_texture(self):
+        if self.size_image is not None:
+            self.image = cv.resize(self.image, self.size_image)
+        first_buffer = np.flip(self.image, 0)
+        second_buffer = first_buffer.tostring()
+        texture = Texture.create(size=(self.image.shape[1], self.image.shape[0]), colorfmt='bgr')
+        texture.blit_buffer(second_buffer, colorfmt='bgr', bufferfmt='ubyte')
+        return texture
+
+    def set_image(self, image):
+        self.image = image
+        self.texture = self.get_texture()
+
+    def set_size(self, size):
+        self.size_image = size
+        self.texture = self.get_texture()
+
+
+class CameraImage(Image):
+
+    def __init__(self, read_function, **kwargs):
+        super(CameraImage, self).__init__(**kwargs)
+        self.read_function = read_function
+
+    def update(self):
+        frame = self.read_function()
+        frame = frame[60:frame.shape[0] - 60, ::]
+        frame = cv.resize(frame, (900, 800))
+        buf1 = cv.flip(frame, 0)
+        buf = buf1.tostring()
+        texture1 = Texture.create(size=(frame.shape[1], frame.shape[0]), colorfmt='bgr')
+        texture1.blit_buffer(buf, colorfmt='bgr', bufferfmt='ubyte')
+        self.texture = texture1
+
+
+class BackgroundInitializationScreen(Screen):
+
+    DOT_NUM_FRAMES = 30
+
+    def __init__(self, camera, **kwargs):
+        super(BackgroundInitializationScreen, self).__init__(**kwargs)
+        self.name = 'BackgroundInitialization'
+        self.num_of_dots = 0
+        self.num_of_frames = 0
+        self.camera = camera
+        grid_layout = GridLayout(rows=2, cols=1)
+        label = Label(height=0.08 * Window.size[1], size_hint_y=None,
+                      text='Initialiazing background\nPlease wait.', halign='left',
+                      color=[105, 106, 188, 1], font_size=18)
+        label.bind(size=label.setter('text_size'))
+        self.label = label
+        grid_layout.add_widget(label)
+        grid_layout.add_widget(self.camera)
+        self.add_widget(grid_layout)
+        Clock.schedule_interval(self.update, 1.0 / 33.0)
+
+    def update(self, dt):
+        self.num_of_frames += 1
+        if self.num_of_frames == BackgroundInitializationScreen.DOT_NUM_FRAMES:
+            self.num_of_frames = 0
+            self.num_of_dots += 1
+            self.num_of_dots = 0 if self.num_of_dots == 4 else self.num_of_dots
+        dots = '.' * self.num_of_dots
+        self.label.text = 'Initialiazing background' + dots + '\nPlease wait.'
+
+
+class HandDetectionScreen(Screen):
+
+    def __init__(self, camera_frame, hand_frame, callback, **kwargs):
+        super(HandDetectionScreen, self).__init__(**kwargs)
+        self.name = 'HandDetection'
+        first_grid_layout = GridLayout(rows=2, cols=1)
+        camera_frame_layout = GridLayout(rows=2, cols=1)
+        camera_label = Label(text='Camera:', color=[105, 106, 188, 1], height=Window.size[1] * 0.05, size_hint_y=None)
+        camera_frame_layout.add_widget(camera_label)
+        camera_frame_layout.add_widget(camera_frame)
+        hand_frame_layout = GridLayout(rows=2, cols=1)
+        hand_frame_label = Label(text='Detected hand:', color=[105, 106, 188, 1], size_hint_y=None,
+                                 height=Window.size[1] * 0.05)
+        hand_frame_layout.add_widget(hand_frame_label)
+        hand_frame_layout.add_widget(hand_frame)
+        frames_layout = GridLayout(rows=1, cols=2, height=Window.size[1] * 0.9)
+        frames_layout.add_widget(camera_frame_layout)
+        frames_layout.add_widget(hand_frame_layout)
+        button_layout = GridLayout(rows=2, cols=1, height=Window.size[1] * 0.15, size_hint_y=None)
+        instructions_label = Label(text='Press the "Next" button when the hand is clearly visible.',
+                                   color=[105, 106, 188, 1])
+        button = Button(text='Next')
+        button.bind(on_press=callback)
+        button_layout.add_widget(instructions_label)
+        button_layout.add_widget(button)
+        first_grid_layout.add_widget(frames_layout)
+        first_grid_layout.add_widget(button_layout)
+        self.add_widget(first_grid_layout)
+
+
+class ShowGestureScreen(Screen):
+
+    FINGERS_NAMES = ['Thumb', 'Index', 'Middle', 'Ring', 'Little']
+
+    def __init__(self, camera_frame, hand_frame, **kwargs):
+        super(ShowGestureScreen, self).__init__(**kwargs)
+        self.name = 'ShowGesture'
+        self.desired_finger_states = tuple([False] * 5)
+        self.desired_state_labels = [Label(color=[105, 106, 188, 1]), Label(color=[105, 106, 188, 1]),
+                                     Label(color=[105, 106, 188, 1]), Label(color=[105, 106, 188, 1]),
+                                     Label(color=[105, 106, 188, 1])]
+        ShowGestureScreen.change_fingers_states_labels(self.desired_state_labels, self.desired_finger_states)
+        self.current_fingers_states = tuple([False] * 5)
+        self.current_state_labels = [Label(color=[105, 106, 188, 1]), Label(color=[105, 106, 188, 1]),
+                                     Label(color=[105, 106, 188, 1]), Label(color=[105, 106, 188, 1]),
+                                     Label(color=[105, 106, 188, 1])]
+        ShowGestureScreen.change_fingers_states_labels(self.current_state_labels, self.current_fingers_states)
+        self.desired_hand_image = NumPyColorImage(np.zeros((500, 500, 3)), (1000, 1500), width=1400, height=500,
+                                                  size_hint_y=0)
+        main_grid_layout = GridLayout(rows=1, cols=2)
+        camera_grid_layout = GridLayout(rows=2, cols=1)
+        camera_grid_layout.add_widget(Label(text='Camera:', color=[105, 106, 188, 1], height=Window.size[1] * 0.1,
+                                            size_hint_y=None))
+        camera_grid_layout.add_widget(camera_frame)
+        main_grid_layout.add_widget(camera_grid_layout)
+        states_grid_layout = GridLayout(rows=2, cols=1)
+        current_hand_state_layout = GridLayout(rows=2, cols=1)
+        current_hand_state_layout.add_widget(Label(text='Current hand state:', color=[105, 106, 188, 1],
+                                                   height=Window.size[1] * 0.08, size_hint_y=None))
+        current_hand_state_layout.add_widget(ShowGestureScreen.create_state_layout(hand_frame,
+                                                                                   self.current_state_labels))
+        states_grid_layout.add_widget(current_hand_state_layout)
+        desired_hand_state_layout = GridLayout(rows=2, cols=1)
+        desired_hand_state_layout.add_widget(Label(text='Desired hand state:', color=[105, 106, 188, 1],
+                                                   height=Window.size[1] * 0.08, size_hint_y=None))
+        desired_hand_state_layout.add_widget(ShowGestureScreen.create_state_layout(self.desired_hand_image,
+                                                                                   self.desired_state_labels))
+        states_grid_layout.add_widget(desired_hand_state_layout)
+        main_grid_layout.add_widget(states_grid_layout)
+        self.add_widget(main_grid_layout)
+
+    @staticmethod
+    def create_state_layout(image, labels):
+        layout = GridLayout(rows=1, cols=2)
+        layout.add_widget(image)
+        sub_layout = GridLayout(rows=5, cols=1)
+        for label in labels:
+            sub_layout.add_widget(label)
+        layout.add_widget(sub_layout)
+        return layout
+
+    @staticmethod
+    def change_fingers_states_labels(labels, states):
+        for index in range(0, 5):
+            finger_name = ShowGestureScreen.FINGERS_NAMES[index]
+            label = labels[index]
+            state = states[index]
+            state_repr = 'Up' if state else 'Down'
+            text = f'{finger_name}: {state_repr}'
+            label.text = text
+
+    def set_current_fingers_state(self, fingers_state):
+        self.current_fingers_states = fingers_state
+        ShowGestureScreen.change_fingers_states_labels(self.current_state_labels, self.current_fingers_states)
+
+    def set_desired_fingers_state(self, fingers_state):
+        self.desired_finger_states = fingers_state
+        ShowGestureScreen.change_fingers_states_labels(self.desired_state_labels, self.desired_finger_states)
+
+    def set_desired_hand_image(self, img):
+        self.desired_hand_image.set_image(img)
+
+
+class SuccessScreen(Screen):
+
+    def __init__(self, **kwargs):
+        super(SuccessScreen, self).__init__(**kwargs)
+        self.name = 'Success'
+        self.add_widget(Image(source="success.jpg"))
+
+
+class HandDetectionApp(App):
+
+    SUCCESS_NUM_OF_FRAMES = 15
+
+    def __init__(self, **kwargs):
+        super(HandDetectionApp, self).__init__(**kwargs)
+        self.cameras = []
+        self.camera = None
+        self.hand_frame = None
+        self.web_camera_thread = None
+        self.background_subtractor = None
+        self.current_state = BACKGROUND_INIT_STATE
+        self.screen_manager = None
+        self.hand_detector = HandDetector()
+        self.is_hand_detected = False
+        self.desired_fingers_states = None
+        self.fingers_states = []
+        self.show_gesture_screen = None
+        self.second_hand_frame = None
+        self.buffer = Buffer(10)
+        self.num_of_frames = 0
+
+    def signal_hand_detected(self, instance):
+        self.is_hand_detected = True
+
+    def build(self):
+        Window.size = (800, 790)
+        Window.clearcolor = (1, 1, 1, 1)
+        with open('fingers_states.json') as file:
+            fingers_states_json = load(file)
+            fingers_states = fingers_states_json['fingers_states']
+            self.fingers_states = [{'state': tuple(fs['state']), 'image': cv.imread(fs['path'])}
+                                   for fs in fingers_states]
+        web_camera_thread = WebCameraThread()
+        web_camera_thread.init()
+        web_camera_thread.start()
+        initial_frame = web_camera_thread.frame()
+        cropped_initial_frame = initial_frame[60: initial_frame.shape[0] - 60, ::]
+        self.web_camera_thread = web_camera_thread
+        background_camera = NumPyColorImage(cropped_initial_frame, (900, 800), width=1500, height=1500, size_hint_x=0)
+        hand_detection_camera = NumPyColorImage(cropped_initial_frame, (900, 800), width=1500, height=400,
+                                                size_hint_x=0, size_hint_y=None)
+        show_gesture_camera = NumPyColorImage(cropped_initial_frame, (1000, 1000), width=1500, height=400,
+                                                size_hint_x=0, size_hint_y=None)
+        self.cameras.append(background_camera)
+        self.cameras.append(hand_detection_camera)
+        self.cameras.append(show_gesture_camera)
+        self.hand_frame = NumPyColorImage(np.zeros((500, 500, 3), dtype=np.uint8), (900, 800), width=1500, height=400,
+                                          size_hint_x=0, size_hint_y=None)
+        self.second_hand_frame = NumPyColorImage(np.zeros((500, 500, 3), dtype=np.uint8), (1000, 1500),
+                                                 width=1400, height=500, size_hint_y=0)
+        self.background_subtractor = BackgroundSubtractor(initial_frame.shape[1], initial_frame.shape[0], 150)
+        Clock.schedule_interval(self.update, 1.0 / 33.0)
+        self.show_gesture_screen = ShowGestureScreen(show_gesture_camera, self.second_hand_frame)
+        screen_manager = ScreenManager()
+        screen_manager.add_widget(BackgroundInitializationScreen(background_camera))
+        screen_manager.add_widget(HandDetectionScreen(hand_detection_camera, self.hand_frame,
+                                                      self.signal_hand_detected))
+        screen_manager.add_widget(self.show_gesture_screen)
+        screen_manager.add_widget(SuccessScreen())
+        self.screen_manager = screen_manager
+        return screen_manager
+
+    def update(self, dt):
+        frame = self.web_camera_thread.frame()
+        if self.current_state == BACKGROUND_INIT_STATE:
+            self.background_subtractor.update(frame)
+            if self.background_subtractor.is_initialized():
+                self.current_state = HAND_DETECTION_AND_SEGMENTATION_STATE
+                self.screen_manager.current = 'HandDetection'
+                self.cameras.pop(0)
+        elif self.current_state == HAND_DETECTION_AND_SEGMENTATION_STATE:
+            foreground = self.background_subtractor.foreground_mask(frame)
+            detection = self.hand_detector.detect(frame, foreground)
+            if detection is not None:
+                hand_box, hand_mask = detection
+                hand_mask = np.array(hand_mask, dtype=np.uint8)
+                hand_mask = fill_holes(hand_mask)
+                hand_roi = get_box_roi(frame, hand_box)
+                hand_mask_bgr = cv.merge((hand_mask, hand_mask, hand_mask))
+                hand_extracted = cv.bitwise_and(hand_roi, hand_mask_bgr)
+                x, y, w, h = hand_box
+                cv.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
+                self.hand_frame.set_image(hand_extracted)
+            if self.is_hand_detected:
+                self.cameras.pop(0)
+                self.hand_detector.capture()
+                self.current_state = CHOOSE_RANDOM_FINGERS_STATE
+        elif self.current_state == CHOOSE_RANDOM_FINGERS_STATE:
+            self.desired_fingers_states = random.choice(self.fingers_states)
+            self.current_state = SHOW_GESTURE_STATE
+            self.show_gesture_screen.set_desired_fingers_state(self.desired_fingers_states['state'])
+            self.show_gesture_screen.set_desired_hand_image(self.desired_fingers_states['image'])
+            self.screen_manager.current = 'ShowGesture'
+        elif self.current_state == SHOW_GESTURE_STATE:
+            detection = self.hand_detector.track(frame)
+            if detection is not None:
+                hand_box, hand_mask = detection
+                hand_mask = fill_holes(hand_mask)
+                hand_roi = get_box_roi(frame, hand_box)
+                hand_mask_bgr = cv.merge((hand_mask, hand_mask, hand_mask))
+                hand_extracted = cv.bitwise_and(hand_roi, hand_mask_bgr)
+                x, y, w, h = hand_box
+                cv.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
+                self.second_hand_frame.set_image(hand_extracted)
+                hand_mask = np.flip(hand_mask, axis=1)
+                fingers_states = tuple([False] * 5)
+                try:
+                    fingers_states = tuple(get_hand_attributes(hand_mask))
+                except Exception:
+                    pass
+                self.buffer.add(fingers_states)
+                fingers_states = self.buffer.get_majority_element()
+                fingers_states = tuple([False] * 5) if fingers_states is None else fingers_states
+                self.show_gesture_screen.set_current_fingers_state(fingers_states)
+                if fingers_states == self.desired_fingers_states['state']:
+                    self.current_state = SUCCESS_STATE
+                    self.screen_manager.current = 'Success'
+        elif self.current_state == SUCCESS_STATE:
+            self.num_of_frames += 1
+            if self.num_of_frames == HandDetectionApp.SUCCESS_NUM_OF_FRAMES:
+                self.current_state = CHOOSE_RANDOM_FINGERS_STATE
+                self.num_of_frames = 0
+        cropped_frame = frame[60: frame.shape[0] - 60, ::]
+        self.cameras[0].set_image(cropped_frame)
+
+
+def test_app():
+    app = HandDetectionApp()
+    app.run()
+
+
 if __name__ == '__main__':
     #main()
     #main_gray()
-    third_main()
+    #third_main()
     #test_hand_detection()
     #test_rgb_to_ycb()
     #test_web_camera_thread()
     #test_camera_subtraction()
     #test_background_subtractor()
     #test()
+    test_app()
     #collect_test_images()
     #get_accuracy()
